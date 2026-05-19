@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"nexus/internal/config"
 	"nexus/internal/control"
+	"nexus/internal/static"
 	"nexus/pkg/logger"
 	"nexus/pkg/protocol"
 
@@ -19,22 +21,29 @@ import (
 )
 
 type GatewayServer struct {
-	config     *config.GatewayConfig
-	control    *control.ControlServer
-	routes     map[string]*config.RouteConfig
-	httpServer *http.Server
+	config        *config.GatewayConfig
+	control       *control.ControlServer
+	routes        map[string]*config.RouteConfig
+	staticHandler *static.StaticHandler
+	httpServer    *http.Server
 }
 
-func NewGatewayServer(cfg *config.GatewayConfig, control *control.ControlServer, routes []config.RouteConfig) *GatewayServer {
+func NewGatewayServer(cfg *config.GatewayConfig, control *control.ControlServer, routes []config.RouteConfig, staticCfg *config.StaticConfig) *GatewayServer {
 	routeMap := make(map[string]*config.RouteConfig)
 	for i := range routes {
 		routeMap[routes[i].Host] = &routes[i]
 	}
 
+	var staticHandler *static.StaticHandler
+	if staticCfg.Enabled {
+		staticHandler = static.NewStaticHandler(staticCfg.Domain, staticCfg.Path, staticCfg.IndexFile)
+	}
+
 	return &GatewayServer{
-		config:  cfg,
-		control: control,
-		routes:  routeMap,
+		config:        cfg,
+		control:       control,
+		routes:        routeMap,
+		staticHandler: staticHandler,
 	}
 }
 
@@ -42,10 +51,10 @@ func (g *GatewayServer) Start() error {
 	addr := fmt.Sprintf("%s:%d", g.config.Host, g.config.Port)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", g.handleProxy)
 	mux.HandleFunc("/health", g.handleHealth)
 	mux.HandleFunc("/routes", g.handleRoutes)
 	mux.HandleFunc("/devices", g.handleDevices)
+	mux.HandleFunc("/", g.handleRequest)
 
 	g.httpServer = &http.Server{
 		Addr:         addr,
@@ -55,27 +64,50 @@ func (g *GatewayServer) Start() error {
 		IdleTimeout:  time.Duration(g.config.IdleTimeout) * time.Second,
 	}
 
-	logger.Log.Info("HTTP gateway started", zap.String("address", addr))
-
-	go func() {
-		if err := g.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Log.Error("HTTP gateway failed", zap.Error(err))
+	if g.config.HTTPS {
+		g.httpServer.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			NextProtos: []string{"h2", "http/1.1"},
 		}
-	}()
+
+		logger.Log.Info("HTTPS gateway started",
+			zap.String("address", addr),
+			zap.String("cert", g.config.CertFile))
+
+		go func() {
+			if err := g.httpServer.ListenAndServeTLS(g.config.CertFile, g.config.KeyFile); err != nil && err != http.ErrServerClosed {
+				logger.Log.Error("HTTPS gateway failed", zap.Error(err))
+			}
+		}()
+	} else {
+		logger.Log.Info("HTTP gateway started", zap.String("address", addr))
+		go func() {
+			if err := g.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Log.Error("HTTP gateway failed", zap.Error(err))
+			}
+		}()
+	}
 
 	return nil
 }
 
-func (g *GatewayServer) handleProxy(w http.ResponseWriter, r *http.Request) {
+func (g *GatewayServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	if idx := strings.Index(host, ":"); idx != -1 {
 		host = host[:idx]
 	}
 
+	if g.staticHandler != nil && host == g.staticHandler.Domain() {
+		g.staticHandler.ServeHTTP(w, r)
+		return
+	}
+
 	route, exists := g.routes[host]
 	if !exists {
-		logger.Log.Warn("No route found for host", zap.String("host", host))
-		http.Error(w, "No route configured for this host", http.StatusNotFound)
+		logger.Log.Warn("No route found for host",
+			zap.String("host", host),
+			zap.String("path", r.URL.Path))
+		http.Error(w, fmt.Sprintf("No route configured for host: %s", host), http.StatusNotFound)
 		return
 	}
 
@@ -104,6 +136,9 @@ func (g *GatewayServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			headers[key] = values[0]
 		}
 	}
+
+	headers["X-Forwarded-Host"] = host
+	headers["X-Forwarded-Proto"] = "https"
 
 	reqPayload := &protocol.RequestPayload{
 		RequestID:  requestID,
@@ -149,6 +184,9 @@ func (g *GatewayServer) writeResponse(w http.ResponseWriter, resp *protocol.Resp
 	}
 
 	for key, value := range resp.Headers {
+		if key == "Content-Length" {
+			continue
+		}
 		w.Header().Set(key, value)
 	}
 
@@ -169,8 +207,9 @@ func (g *GatewayServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "ok",
-		"time":   time.Now().Unix(),
+		"status":  "ok",
+		"time":    time.Now().Unix(),
+		"version": "1.0.0",
 	})
 }
 
@@ -187,18 +226,14 @@ func (g *GatewayServer) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"routes": routes,
+		"count":  len(routes),
 	})
 }
 
 func (g *GatewayServer) handleDevices(w http.ResponseWriter, r *http.Request) {
-	devices := make([]map[string]interface{}, 0)
-
-	// This would need a method to list sessions from control server
-	// For now, return empty list
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"devices": devices,
+		"devices": []string{},
 	})
 }
 

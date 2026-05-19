@@ -32,6 +32,7 @@ func Init(level, encoding string) error {
 			LevelKey:       "level",
 			NameKey:        "logger",
 			CallerKey:      "caller",
+			FunctionKey:    zapcore.OmitKey,
 			MessageKey:     "msg",
 			StacktraceKey:  "stacktrace",
 			LineEnding:     zapcore.DefaultLineEnding,

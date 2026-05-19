@@ -6,19 +6,41 @@ control:
 
 gateway:
   host: "0.0.0.0"
-  port: 8080
+  port: 8443
   read_timeout: 30
   write_timeout: 30
   idle_timeout: 120
+  https: false
+  cert_file: ""
+  key_file: ""
 
 routes:
-  - host: "app1.example.com"
-    device_id: "raspberry-pi-1"
-    target_port: 3000
-  - host: "app2.example.com"
-    device_id: "raspberry-pi-1"
+  - host: "chat.zilab.su"
+    device_id: "raspberry-pi-4"
     target_port: 8080
+    
+  - host: "launcher.zilab.su"
+    device_id: "raspberry-pi-4"
+    target_port: 3000
+    
+  - host: "api.zilab.su"
+    device_id: "raspberry-pi-4"
+    target_port: 8081
+    
+  - host: "auth.zilab.su"
+    device_id: "raspberry-pi-4"
+    target_port: 8082
+    
+  - host: "pay.zilab.su"
+    device_id: "raspberry-pi-4"
+    target_port: 8083
+
+static:
+  enabled: true
+  domain: "zilab.su"
+  path: "./web"
+  index_file: "index.html"
 
 log:
-  level: "info"
+  level: "debug"
   encoding: "console"

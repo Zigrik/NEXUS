@@ -1,0 +1,16 @@
+services:
+  nexus-vps:
+    build: .
+    container_name: nexus-vps
+    ports:
+      - "8443:8443"
+      - "9000:9000"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./web:/app/web:ro
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

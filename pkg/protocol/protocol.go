@@ -15,8 +15,6 @@ const (
 	MsgResponse
 	MsgClose
 	MsgRegisterAck
-	MsgStreamData
-	MsgStreamClose
 )
 
 type Message struct {
@@ -59,12 +57,6 @@ type ResponsePayload struct {
 
 type ClosePayload struct {
 	Reason string `json:"reason"`
-}
-
-type StreamDataPayload struct {
-	StreamID string `json:"stream_id"`
-	Data     []byte `json:"data"`
-	IsEOF    bool   `json:"is_eof"`
 }
 
 func WriteMessage(w io.Writer, msg *Message) error {

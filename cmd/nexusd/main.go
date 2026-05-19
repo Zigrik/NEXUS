@@ -40,7 +40,7 @@ func main() {
 		logger.Log.Fatal("Failed to start control server", zap.Error(err))
 	}
 
-	gatewayServer := gateway.NewGatewayServer(&cfg.Gateway, controlServer, cfg.Routes)
+	gatewayServer := gateway.NewGatewayServer(&cfg.Gateway, controlServer, cfg.Routes, &cfg.Static)
 	if err := gatewayServer.Start(); err != nil {
 		logger.Log.Fatal("Failed to start gateway server", zap.Error(err))
 	}
