@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
@@ -97,13 +98,24 @@ func (g *GatewayServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		host = host[:idx]
 	}
 
+	// СНАЧАЛА проверяем статический сайт (zilab.su)
 	if g.staticHandler != nil && host == g.staticHandler.Domain() {
+		logger.Log.Debug("Serving static content",
+			zap.String("host", host),
+			zap.String("path", r.URL.Path))
 		g.staticHandler.ServeHTTP(w, r)
 		return
 	}
 
+	// ПОТОМ проверяем маршруты для проксирования (chat.zilab.su, api.zilab.su и т.д.)
 	route, exists := g.routes[host]
 	if !exists {
+		// Если не нашли маршрут, может быть это запрос к корневому домену без маршрута
+		if g.staticHandler != nil && host == g.staticHandler.Domain() {
+			g.staticHandler.ServeHTTP(w, r)
+			return
+		}
+
 		logger.Log.Warn("No route found for host",
 			zap.String("host", host),
 			zap.String("path", r.URL.Path))
@@ -111,6 +123,7 @@ func (g *GatewayServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Получаем сессию устройства
 	session, exists := g.control.GetSession(route.DeviceID)
 	if !exists {
 		logger.Log.Warn("Device not connected",
@@ -120,8 +133,10 @@ func (g *GatewayServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Генерируем уникальный ID для запроса
 	requestID := generateRequestID()
 
+	// Читаем тело запроса
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		logger.Log.Error("Failed to read request body", zap.Error(err))
@@ -130,6 +145,7 @@ func (g *GatewayServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	// Формируем заголовки
 	headers := make(map[string]string)
 	for key, values := range r.Header {
 		if len(values) > 0 {
@@ -137,9 +153,12 @@ func (g *GatewayServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Добавляем оригинальные заголовки для прокси
 	headers["X-Forwarded-Host"] = host
 	headers["X-Forwarded-Proto"] = "https"
+	headers["X-Forwarded-For"] = r.RemoteAddr
 
+	// Создаем payload запроса
 	reqPayload := &protocol.RequestPayload{
 		RequestID:  requestID,
 		Method:     r.Method,
@@ -149,14 +168,17 @@ func (g *GatewayServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		TargetPort: route.TargetPort,
 	}
 
+	// Отправляем запрос на устройство
 	if err := session.SendRequest(reqPayload); err != nil {
 		logger.Log.Error("Failed to send request to device",
 			zap.String("device_id", route.DeviceID),
+			zap.String("request_id", requestID),
 			zap.Error(err))
 		http.Error(w, "Failed to send request", http.StatusBadGateway)
 		return
 	}
 
+	// Ожидаем ответ с таймаутом
 	select {
 	case resp := <-session.GetResponseChan():
 		if resp.RequestID != requestID {
@@ -169,7 +191,8 @@ func (g *GatewayServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	case <-time.After(60 * time.Second):
 		logger.Log.Error("Request timeout",
 			zap.String("request_id", requestID),
-			zap.String("host", host))
+			zap.String("host", host),
+			zap.String("path", r.URL.Path))
 		http.Error(w, "Request timeout", http.StatusGatewayTimeout)
 	}
 }
@@ -183,15 +206,19 @@ func (g *GatewayServer) writeResponse(w http.ResponseWriter, resp *protocol.Resp
 		return
 	}
 
+	// Копируем заголовки
 	for key, value := range resp.Headers {
+		// Пропускаем Content-Length, он будет установлен автоматически
 		if key == "Content-Length" {
 			continue
 		}
 		w.Header().Set(key, value)
 	}
 
+	// Устанавливаем статус код
 	w.WriteHeader(resp.StatusCode)
 
+	// Пишем тело ответа
 	if len(resp.Body) > 0 {
 		if _, err := w.Write(resp.Body); err != nil {
 			logger.Log.Error("Failed to write response body", zap.Error(err))
@@ -231,6 +258,7 @@ func (g *GatewayServer) handleRoutes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *GatewayServer) handleDevices(w http.ResponseWriter, r *http.Request) {
+	// TODO: Получить список активных устройств из control server
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"devices": []string{},
@@ -240,7 +268,9 @@ func (g *GatewayServer) handleDevices(w http.ResponseWriter, r *http.Request) {
 func (g *GatewayServer) Stop() error {
 	logger.Log.Info("Stopping HTTP gateway...")
 	if g.httpServer != nil {
-		return g.httpServer.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return g.httpServer.Shutdown(ctx)
 	}
 	return nil
 }

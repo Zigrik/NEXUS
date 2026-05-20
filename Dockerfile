@@ -19,6 +19,6 @@ COPY --from=builder /app/nexusd .
 COPY --from=builder /app/config.yaml .
 COPY web ./web
 
-EXPOSE 8443 9000
+EXPOSE 8443 9000    # Изменено с 8080 на 8443, добавлен 9000
 
 CMD ["./nexusd", "config.yaml"]

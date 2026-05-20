@@ -1,46 +1,42 @@
 control:
   host: "0.0.0.0"
-  port: 9000
+  port: 9000                          # Порт для подключения Pi
   heartbeat_interval: 30
   heartbeat_timeout: 90
 
 gateway:
   host: "0.0.0.0"
-  port: 8443
+  port: 8443                          # Изменено с 8080 на 8443
   read_timeout: 30
   write_timeout: 30
   idle_timeout: 120
-  https: false
-  cert_file: ""
-  key_file: ""
+  https: true                         # Включен HTTPS
+  cert_file: "/etc/letsencrypt/live/zilab.su/fullchain.pem"
+  key_file: "/etc/letsencrypt/live/zilab.su/privkey.pem"
 
 routes:
   - host: "chat.zilab.su"
     device_id: "raspberry-pi-4"
     target_port: 8080
-    
   - host: "launcher.zilab.su"
     device_id: "raspberry-pi-4"
     target_port: 3000
-    
   - host: "api.zilab.su"
     device_id: "raspberry-pi-4"
     target_port: 8081
-    
   - host: "auth.zilab.su"
     device_id: "raspberry-pi-4"
     target_port: 8082
-    
   - host: "pay.zilab.su"
     device_id: "raspberry-pi-4"
     target_port: 8083
 
 static:
   enabled: true
-  domain: "zilab.su"
+  domain: "zilab.su"                  # Оставляем zilab.su
   path: "./web"
   index_file: "index.html"
 
 log:
-  level: "debug"
-  encoding: "console"
+  level: "info"
+  encoding: "json"
