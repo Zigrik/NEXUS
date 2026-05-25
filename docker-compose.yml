@@ -9,24 +9,17 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./web:/app/web:ro
+      - ./certs:/app/certs:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
     environment:
       - TZ=UTC
-      - GIN_MODE=release
     healthcheck:
       test: ["CMD", "curl", "-f", "https://localhost:8443/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-    networks:
-      - nexus-network
-
-networks:
-  nexus-network:
-    driver: bridge

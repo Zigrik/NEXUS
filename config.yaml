@@ -1,16 +1,20 @@
 control:
   host: "0.0.0.0"
-  port: 9000                          # Порт для подключения Pi
+  port: 9000
   heartbeat_interval: 30
   heartbeat_timeout: 90
+  tls_enabled: true
+  ca_file: "/opt/nexus/certs/ca.pem"
+  cert_file: "/opt/nexus/certs/server-cert.pem"
+  key_file: "/opt/nexus/certs/server-key.pem"
 
 gateway:
   host: "0.0.0.0"
-  port: 8443                          # Изменено с 8080 на 8443
+  port: 8443
   read_timeout: 30
   write_timeout: 30
   idle_timeout: 120
-  https: true                         # Включен HTTPS
+  https: true
   cert_file: "/etc/letsencrypt/live/zilab.su/fullchain.pem"
   key_file: "/etc/letsencrypt/live/zilab.su/privkey.pem"
 
@@ -33,7 +37,7 @@ routes:
 
 static:
   enabled: true
-  domain: "zilab.su"                  # Оставляем zilab.su
+  domain: "zilab.su"
   path: "./web"
   index_file: "index.html"
 

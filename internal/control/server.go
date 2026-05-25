@@ -1,9 +1,12 @@
 package control
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -21,6 +24,7 @@ type ControlServer struct {
 	sessionMu sync.RWMutex
 	closeCh   chan struct{}
 	wg        sync.WaitGroup
+	tlsConfig *tls.Config
 }
 
 func NewControlServer(cfg *config.ControlConfig) *ControlServer {
@@ -31,9 +35,60 @@ func NewControlServer(cfg *config.ControlConfig) *ControlServer {
 	}
 }
 
+func (s *ControlServer) loadTLSConfig() error {
+	if !s.config.TLSEnabled {
+		logger.Log.Info("TLS disabled for control server")
+		return nil
+	}
+
+	// Загружаем CA сертификат для проверки клиентов
+	caCert, err := os.ReadFile(s.config.CAFile)
+	if err != nil {
+		return fmt.Errorf("failed to read CA cert: %w", err)
+	}
+
+	certPool := x509.NewCertPool()
+	if !certPool.AppendCertsFromPEM(caCert) {
+		return fmt.Errorf("failed to parse CA cert")
+	}
+
+	// Загружаем серверный сертификат
+	cert, err := tls.LoadX509KeyPair(s.config.CertFile, s.config.KeyFile)
+	if err != nil {
+		return fmt.Errorf("failed to load server cert: %w", err)
+	}
+
+	s.tlsConfig = &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    certPool,
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	logger.Log.Info("mTLS configured for control server",
+		zap.String("ca", s.config.CAFile),
+		zap.String("cert", s.config.CertFile))
+
+	return nil
+}
+
 func (s *ControlServer) Start() error {
+	// Загружаем TLS конфигурацию
+	if err := s.loadTLSConfig(); err != nil {
+		return err
+	}
+
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
-	listener, err := net.Listen("tcp", addr)
+
+	var listener net.Listener
+	var err error
+
+	if s.config.TLSEnabled {
+		listener, err = tls.Listen("tcp", addr, s.tlsConfig)
+	} else {
+		listener, err = net.Listen("tcp", addr)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -41,7 +96,8 @@ func (s *ControlServer) Start() error {
 	s.listener = listener
 
 	logger.Log.Info("Control server started",
-		zap.String("address", addr))
+		zap.String("address", addr),
+		zap.Bool("tls_enabled", s.config.TLSEnabled))
 
 	s.wg.Add(1)
 	go s.acceptLoop()
@@ -76,6 +132,34 @@ func (s *ControlServer) handleConnection(conn net.Conn) {
 	defer s.wg.Done()
 	defer conn.Close()
 
+	var clientCN string
+
+	// Если TLS включен, проверяем сертификат клиента
+	if s.config.TLSEnabled {
+		tlsConn, ok := conn.(*tls.Conn)
+		if !ok {
+			logger.Log.Error("Not a TLS connection")
+			return
+		}
+
+		// Выполняем handshake
+		if err := tlsConn.Handshake(); err != nil {
+			logger.Log.Error("TLS handshake failed", zap.Error(err))
+			return
+		}
+
+		// Проверяем сертификат клиента
+		certs := tlsConn.ConnectionState().PeerCertificates
+		if len(certs) == 0 {
+			logger.Log.Error("No client certificate provided")
+			return
+		}
+
+		clientCN = certs[0].Subject.CommonName
+		logger.Log.Info("Client authenticated",
+			zap.String("common_name", clientCN))
+	}
+
 	msg, err := protocol.ReadMessage(conn)
 	if err != nil {
 		logger.Log.Error("Failed to read register message", zap.Error(err))
@@ -90,6 +174,14 @@ func (s *ControlServer) handleConnection(conn net.Conn) {
 	var registerPayload protocol.RegisterPayload
 	if err := json.Unmarshal(msg.Payload, &registerPayload); err != nil {
 		logger.Log.Error("Failed to parse register payload", zap.Error(err))
+		return
+	}
+
+	// Проверяем, что CN клиента совпадает с device_id (при mTLS)
+	if s.config.TLSEnabled && clientCN != registerPayload.DeviceID {
+		logger.Log.Error("Device ID mismatch",
+			zap.String("cn", clientCN),
+			zap.String("device_id", registerPayload.DeviceID))
 		return
 	}
 

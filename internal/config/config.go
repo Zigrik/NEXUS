@@ -19,6 +19,10 @@ type ControlConfig struct {
 	Port              int    `yaml:"port"`
 	HeartbeatInterval int    `yaml:"heartbeat_interval"`
 	HeartbeatTimeout  int    `yaml:"heartbeat_timeout"`
+	TLSEnabled        bool   `yaml:"tls_enabled"`
+	CAFile            string `yaml:"ca_file"`
+	CertFile          string `yaml:"cert_file"`
+	KeyFile           string `yaml:"key_file"`
 }
 
 type GatewayConfig struct {
